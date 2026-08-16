@@ -264,13 +264,13 @@ html,body{
   <div class="grab"></div>
   <div class="sh-t disp">Boards</div>
   <div class="mrow" style="margin-bottom:12px">
-    <button class="mbtn" id="bAdd">+ New board</button>
-    <button class="mbtn" id="bDup">⧉ Duplicate current</button>
+    <button class="mbtn" id="bAdd">+ New board (carries over)</button>
+    <button class="mbtn" id="bBlank">◻ Blank board</button>
     <button class="mbtn" id="bRename">✎ Rename current</button>
     <button class="mbtn warn" id="bDel">🗑 Delete current</button>
   </div>
   <div class="boards" id="bList"></div>
-  <p class="hint" style="margin-top:12px">Duplicate a board, nudge the players, then flip between boards to animate the movement.</p>
+  <p class="hint" style="margin-top:12px">A new board carries the current one over — nudge the players, then flip between boards to animate the movement.</p>
 </div>
 
 <div class="sheet" id="shMenu">
@@ -289,6 +289,7 @@ html,body{
   <div class="mrow">
     <button class="mbtn" id="mSize">⇲ Token size</button>
     <button class="mbtn" id="mFill">⛶ Pitch fill</button>
+    <button class="mbtn" id="mLine">╱ Drawing thickness</button>
     <button class="mbtn" id="mLabels">Aa Numbers / labels</button>
     <button class="mbtn" id="mBall">● Ball to centre</button>
     <button class="mbtn warn" id="mClearLines">Clear lines & zones</button>
@@ -300,7 +301,8 @@ html,body{
   <p class="hint">
     <b>Drag</b> to move · <b>tap</b> for actions · <b>double-tap</b> to type a 2–3 letter label.<br>
     <b>Link</b>: tap two players. <b>Pass/Run</b>: drag on the grass. <b>Zone</b>: drag a box, double-tap to rename.<br>
-    <b>Erase</b>: tap anything. Swipe the grass sideways to change board. <b>⌄</b> hides the panels for a clean view.
+    Tap a <b>pass or run arrow</b> to grab it — drag it around, pull either end, or drag the orange middle handle to <b>bend it into a cross</b>. Zones move and resize the same way.<br>
+    <b>Erase</b>: tap anything. Swipe the grass sideways to change board. <b>⌄</b> hides the panels.
   </p>
 </div>
 
@@ -320,10 +322,10 @@ const newBoard=n=>({id:uid(),name:n||"New board",tokens:[],links:[],arrows:[],zo
 let S={
   boards:[newBoard("Build-up")], cur:0,
   teams:{A:{color:"#e8503a"},B:{color:"#f5d047"}},
-  tool:"move", showLabels:true, tokScale:0.058, fill:1.42
+  tool:"move", showLabels:true, tokScale:0.058, fill:1.42, lineScale:1
 };
-let sel=null,pendingLink=null,history=[],saveT=null,restored=false;
-let TOK=26,LW=4,BAND={x:0,y:0,w:0,h:0},ghost=null,drag=null,lastTap={id:null,t:0};
+let sel=null,selDraw=null,pendingLink=null,history=[],saveT=null,restored=false;
+let TOK=26,LW=3,HR=8,BAND={x:0,y:0,w:0,h:0},ghost=null,drag=null,lastTap={id:null,t:0};
 
 const $=s=>document.querySelector(s);
 const B=()=>S.boards[S.cur];
@@ -338,7 +340,7 @@ function save(){
   clearTimeout(saveT);
   saveT=setTimeout(async()=>{
     try{ await window.storage.set("tactics:v2",JSON.stringify({
-      boards:S.boards,teams:S.teams,showLabels:S.showLabels,cur:S.cur,tokScale:S.tokScale,fill:S.fill})); }catch(e){}
+      boards:S.boards,teams:S.teams,showLabels:S.showLabels,cur:S.cur,tokScale:S.tokScale,fill:S.fill,lineScale:S.lineScale})); }catch(e){}
   },350);
 }
 async function load(){
@@ -352,6 +354,7 @@ async function load(){
         S.showLabels=d.showLabels!==false;
         if(d.tokScale)S.tokScale=d.tokScale;
         if(d.fill)S.fill=d.fill;
+        if(d.lineScale)S.lineScale=d.lineScale;
         S.cur=Math.min(d.cur||0,d.boards.length-1);
       }
     }
@@ -368,7 +371,8 @@ function layout(){
   marks.style.width=BAND.w+"px"; marks.style.height=BAND.h+"px";
   TOK=Math.max(18,Math.round(r.width*S.tokScale));
   document.documentElement.style.setProperty("--tok",TOK+"px");
-  LW=Math.max(2.2,TOK*0.155);
+  LW=Math.max(1.6,TOK*0.105*(S.lineScale||1));
+  HR=Math.max(7,TOK*0.30);
   layerDraw.setAttribute("viewBox",`0 0 ${r.width} ${r.height}`);
 }
 /* pitch-relative % (0–100 inside the markings) -> screen % */
@@ -381,6 +385,21 @@ function pctFromEvent(e){
   return { x:clamp((e.clientX-r.left)/r.width*100,1,99), y:clamp((e.clientY-r.top)/r.height*100,1,99) };
 }
 const px=t=>{const r=rect();return{x:t.x/100*r.width,y:t.y/100*r.height};};
+function A2px(a){
+  const r=rect();
+  const mx=(a.mx!=null?a.mx:(a.x1+a.x2)/2), my=(a.my!=null?a.my:(a.y1+a.y2)/2);
+  return {x1:a.x1/100*r.width,y1:a.y1/100*r.height,x2:a.x2/100*r.width,y2:a.y2/100*r.height,
+          mx:mx/100*r.width,my:my/100*r.height};
+}
+function arrowPath(a){
+  const P=A2px(a);
+  const bent=Math.hypot(P.mx-(P.x1+P.x2)/2,P.my-(P.y1+P.y2)/2)>2.5;
+  if(!bent) return {d:`M${P.x1} ${P.y1} L${P.x2} ${P.y2}`,P,bent:false};
+  const cx=2*P.mx-(P.x1+P.x2)/2, cy=2*P.my-(P.y1+P.y2)/2;
+  return {d:`M${P.x1} ${P.y1} Q${cx} ${cy} ${P.x2} ${P.y2}`,P,bent:true};
+}
+const arrowById=id=>B().arrows.find(a=>a.id===id);
+const zoneById=id=>B().zones.find(z=>z.id===id);
 const tokById=id=>B().tokens.find(t=>t.id===id);
 const teamColor=t=>t.color||(t.team==="ball"?"#fff":S.teams[t.team].color);
 function readable(hex){const c=hex.replace("#","");const n=c.length===3?c.split("").map(x=>x+x).join(""):c;
@@ -396,7 +415,7 @@ function snap(){history.push(JSON.stringify({boards:S.boards,cur:S.cur}));if(his
 function undo(){
   if(!history.length){toast("Nothing to undo");return;}
   const d=JSON.parse(history.pop());
-  S.boards=d.boards;S.cur=Math.min(d.cur,d.boards.length-1);sel=null;pendingLink=null;
+  S.boards=d.boards;S.cur=Math.min(d.cur,d.boards.length-1);sel=null;selDraw=null;pendingLink=null;
   if(!history.length)$("#btnUndo").classList.add("off");
   renderAll();save();
 }
@@ -445,7 +464,7 @@ function renderDraw(){
   b.zones.forEach(z=>{
     const x=z.x/100*r.width,y=z.y/100*r.height,w=z.w/100*r.width,h=z.h/100*r.height;
     s+=`<g data-kind="zone" data-id="${z.id}" style="pointer-events:auto">
-      <rect x="${x}" y="${y}" width="${w}" height="${h}" rx="4" fill="${z.color}33" stroke="${z.color}" stroke-width="2.5"/>
+      <rect x="${x}" y="${y}" width="${w}" height="${h}" rx="4" fill="${z.color}33" stroke="${z.color}" stroke-width="${Math.max(1.6,LW*0.7)}"/>
       <text class="zlabel" x="${x+w/2}" y="${y+16}" text-anchor="middle">${esc(z.label||"")}</text></g>`;
   });
   b.links.forEach(l=>{
@@ -456,14 +475,40 @@ function renderDraw(){
       <line x1="${p1.x}" y1="${p1.y}" x2="${p2.x}" y2="${p2.y}" stroke="${l.color}" stroke-width="${LW}" stroke-linecap="round" ${l.arrow?`marker-end="url(#ah${mid(l.color)})"`:""}/></g>`;
   });
   b.arrows.forEach(a=>{
-    const x1=a.x1/100*r.width,y1=a.y1/100*r.height,x2=a.x2/100*r.width,y2=a.y2/100*r.height;
+    const {d}=arrowPath(a);
+    const on = selDraw&&selDraw.kind==="arrow"&&selDraw.id===a.id;
     s+=`<g data-kind="arrow" data-id="${a.id}" style="pointer-events:auto">
-      <line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="transparent" stroke-width="${Math.max(20,LW*5)}"/>
-      <line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${a.color}" stroke-width="${LW*0.9}" stroke-linecap="round"
-      ${a.dash?`stroke-dasharray="${LW*2.2} ${LW*1.8}"`:""} marker-end="url(#ah${mid(a.color)})"/></g>`;
+      <path d="${d}" fill="none" stroke="transparent" stroke-width="${Math.max(22,LW*7)}"/>
+      ${on?`<path d="${d}" fill="none" stroke="rgba(255,255,255,.55)" stroke-width="${LW*2.4}" stroke-linecap="round"/>`:""}
+      <path d="${d}" fill="none" stroke="${a.color}" stroke-width="${LW}" stroke-linecap="round"
+      ${a.dash?`stroke-dasharray="${LW*2.4} ${LW*2}"`:""} marker-end="url(#ah${mid(a.color)})"/></g>`;
   });
   if(ghost)s+=ghost;
+  s+=handles();
   layerDraw.innerHTML=s;
+}
+function handle(x,y,h,id,fill){
+  return `<g data-h="${h}" data-id="${id}" style="pointer-events:auto">
+    <circle cx="${x}" cy="${y}" r="${HR*1.5}" fill="transparent"/>
+    <circle cx="${x}" cy="${y}" r="${HR}" fill="${fill||"#fff"}" stroke="#ff6a45" stroke-width="2"/></g>`;
+}
+function handles(){
+  if(!selDraw) return "";
+  if(selDraw.kind==="arrow"){
+    const a=arrowById(selDraw.id); if(!a) return "";
+    const P=A2px(a);
+    let out=handle(P.x1,P.y1,"a",a.id)+handle(P.x2,P.y2,"b",a.id);
+    if(!a.dash) out+=handle(P.mx,P.my,"m",a.id,"#ff6a45");   // bend handle: straight/pass arrows only
+    return out;
+  }
+  if(selDraw.kind==="zone"){
+    const z=zoneById(selDraw.id); if(!z) return "";
+    const r=rect(),x=z.x/100*r.width,y=z.y/100*r.height,w=z.w/100*r.width,h=z.h/100*r.height;
+    return `<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="4" fill="none"
+      stroke="rgba(255,255,255,.8)" stroke-width="1.5" stroke-dasharray="6 5"/>`
+      + handle(x,y,"tl",z.id) + handle(x+w,y+h,"br",z.id);
+  }
+  return "";
 }
 function renderChrome(){
   $("#bName").textContent=(B().name||"Board").toUpperCase();
@@ -475,7 +520,22 @@ function renderChrome(){
   $("#addB").style.color=readable(S.teams.B.color);
   document.querySelectorAll(".tool").forEach(b=>b.classList.toggle("on",b.dataset.tool===S.tool));
 }
+const DPAL=["#ff6a45","#ffffff","#ffd23f","#3aa0e8","#3ecf8e","#e8503a"];
 function renderSelbar(){
+  if(selDraw){
+    const it = selDraw.kind==="arrow"?arrowById(selDraw.id):zoneById(selDraw.id);
+    if(!it){selDraw=null;selbar.classList.remove("on");selbar.innerHTML="";return;}
+    selbar.classList.add("on");
+    const extra = selDraw.kind==="arrow"
+      ? `<button class="sb" data-d="dash">${it.dash?"— Solid":"⋯ Dashed"}</button>
+         <button class="sb" data-d="straight">↕ Straighten</button>`
+      : `<button class="sb" data-d="rename">Aa Rename</button>`;
+    selbar.innerHTML = extra +
+      `<button class="sb warn" data-d="del">🗑</button><button class="sb" data-d="close">✕</button>
+       <div style="flex-basis:100%;height:1px"></div>` +
+      DPAL.map(c=>`<button class="sb sw${it.color===c?" on":""}" data-dc="${c}" style="background:${c}"></button>`).join("");
+    return;
+  }
   const t=sel&&tokById(sel);
   if(!t){selbar.classList.remove("on");selbar.innerHTML="";return;}
   selbar.classList.add("on");
@@ -534,16 +594,6 @@ function linkTap(id){
   pendingLink=null;renderAll();save();
 }
 function toggleArrow(id){const l=B().links.find(x=>x.id===id);if(!l)return;snap();l.arrow=!l.arrow;renderDraw();save();}
-function zoneTap(id){
-  const z=B().zones.find(x=>x.id===id);if(!z)return;
-  const now=Date.now();
-  if(lastTap.id===id&&now-lastTap.t<340){
-    lastTap={id:null,t:0};
-    ask("Zone label",z.label||"",14).then(v=>{if(v!==null){snap();z.label=v.toUpperCase().slice(0,14);renderDraw();save();}});
-    return;
-  }
-  lastTap={id,t:now};toast("Double-tap zone to rename");
-}
 function eraseEl(kind,id){
   snap();const b=B();
   if(kind==="zone")b.zones=b.zones.filter(z=>z.id!==id);
@@ -557,16 +607,35 @@ pitch.addEventListener("pointerdown",e=>{
   if(e.target.tagName==="INPUT")return;
   const openEd=layerTok.querySelector(".tkedit");
   if(openEd){openEd.blur();return;}
-  const tokEl=e.target.closest(".tk"),g=e.target.closest("g[data-kind]");
+  const tokEl=e.target.closest(".tk"),g=e.target.closest("g[data-kind]"),hd=e.target.closest("g[data-h]");
   pitch.setPointerCapture(e.pointerId);
 
-  if(g&&S.tool==="erase"){eraseEl(g.dataset.kind,g.dataset.id);return;}
+  /* drag a handle of the selected arrow / zone */
+  if(hd){
+    const p=pctFromEvent(e);
+    drag={mode:"handle",h:hd.dataset.h,id:hd.dataset.id,px:p.x,py:p.y,snapped:false};
+    return;
+  }
+  if(g&&S.tool==="erase"){eraseEl(g.dataset.kind,g.dataset.id);selDraw=null;renderSelbar();return;}
   if(g&&!tokEl&&S.tool==="move"){
-    if(g.dataset.kind==="zone"){zoneTap(g.dataset.id);return;}
+    const p=pctFromEvent(e);
     if(g.dataset.kind==="link"){toggleArrow(g.dataset.id);return;}
+    if(g.dataset.kind==="arrow"){
+      const a=arrowById(g.dataset.id);if(!a)return;
+      sel=null;selDraw={kind:"arrow",id:a.id};
+      drag={mode:"movedraw",kind:"arrow",id:a.id,px:p.x,py:p.y,moved:false,snapped:false};
+      renderTokens();renderDraw();renderSelbar();return;
+    }
+    if(g.dataset.kind==="zone"){
+      const z=zoneById(g.dataset.id);if(!z)return;
+      sel=null;selDraw={kind:"zone",id:z.id};
+      drag={mode:"movedraw",kind:"zone",id:z.id,px:p.x,py:p.y,moved:false,snapped:false};
+      renderTokens();renderDraw();renderSelbar();return;
+    }
   }
   if(tokEl){
     const id=tokEl.dataset.id,t=tokById(id);
+    if(selDraw){selDraw=null;renderDraw();renderSelbar();}
     if(S.tool==="erase"){delToken(id);return;}
     if(S.tool==="link"){linkTap(id);return;}
     const p=pctFromEvent(e);
@@ -577,6 +646,7 @@ pitch.addEventListener("pointerdown",e=>{
   if(S.tool==="ball"){addBall(p.x,p.y);return;}
   if(S.tool==="arrow"||S.tool==="run"||S.tool==="zone"){drag={mode:S.tool,x0:p.x,y0:p.y,x1:p.x,y1:p.y};return;}
   drag={mode:"swipe",sx:e.clientX,sy:e.clientY};
+  if(selDraw){selDraw=null;renderDraw();renderSelbar();}
   if(sel){sel=null;renderTokens();renderSelbar();}
   if(pendingLink){pendingLink=null;renderTokens();}
 });
@@ -591,6 +661,38 @@ pitch.addEventListener("pointermove",e=>{
     renderDraw();return;
   }
   const r=rect();
+  if(drag.mode==="handle"){
+    const p=pctFromEvent(e);
+    if(!drag.snapped){snap();drag.snapped=true;}
+    if(drag.h==="tl"||drag.h==="br"){
+      const z=zoneById(drag.id);if(!z)return;
+      if(drag.h==="tl"){const rx=z.x+z.w,ry=z.y+z.h;z.x=Math.min(p.x,rx-4);z.y=Math.min(p.y,ry-3);z.w=rx-z.x;z.h=ry-z.y;}
+      else {z.w=Math.max(4,p.x-z.x);z.h=Math.max(3,p.y-z.y);}
+    }else{
+      const a=arrowById(drag.id);if(!a)return;
+      const dx=p.x-drag.px,dy=p.y-drag.py;
+      if(a.mx==null){a.mx=(a.x1+a.x2)/2;a.my=(a.y1+a.y2)/2;}
+      if(drag.h==="a"){a.x1=p.x;a.y1=p.y;a.mx+=dx/2;a.my+=dy/2;}
+      if(drag.h==="b"){a.x2=p.x;a.y2=p.y;a.mx+=dx/2;a.my+=dy/2;}
+      if(drag.h==="m"){a.mx=p.x;a.my=p.y;}
+      drag.px=p.x;drag.py=p.y;
+    }
+    renderDraw();return;
+  }
+  if(drag.mode==="movedraw"){
+    const p=pctFromEvent(e),dx=p.x-drag.px,dy=p.y-drag.py;
+    if(Math.hypot(dx,dy)>0.25)drag.moved=true;
+    if(drag.moved&&!drag.snapped){snap();drag.snapped=true;}
+    if(drag.kind==="arrow"){
+      const a=arrowById(drag.id);if(!a)return;
+      if(a.mx==null){a.mx=(a.x1+a.x2)/2;a.my=(a.y1+a.y2)/2;}
+      a.x1+=dx;a.x2+=dx;a.mx+=dx;a.y1+=dy;a.y2+=dy;a.my+=dy;
+    }else{
+      const z=zoneById(drag.id);if(!z)return;
+      z.x=clamp(z.x+dx,0,100-z.w);z.y=clamp(z.y+dy,0,100-z.h);
+    }
+    drag.px=p.x;drag.py=p.y;renderDraw();return;
+  }
   if(drag.mode==="arrow"||drag.mode==="run"){
     const p=pctFromEvent(e);drag.x1=p.x;drag.y1=p.y;
     const col=drag.mode==="run"?"#ffffff":"#ff6a45";
@@ -620,15 +722,33 @@ pitch.addEventListener("pointerup",e=>{
     }else{save();renderDraw();}
     return;
   }
+  if(d.mode==="handle"){save();renderDraw();return;}
+  if(d.mode==="movedraw"){
+    if(!d.moved && d.kind==="zone"){
+      const now=Date.now();
+      if(lastTap.id===d.id&&now-lastTap.t<340){
+        lastTap={id:null,t:0};const z=zoneById(d.id);
+        ask("Zone label",z.label||"",14).then(v=>{if(v!==null){snap();z.label=v.toUpperCase().slice(0,14);renderDraw();save();}});
+        return;
+      }
+      lastTap={id:d.id,t:now};
+    }
+    save();renderDraw();return;
+  }
   if(d.mode==="arrow"||d.mode==="run"){
     if(Math.hypot(d.x1-d.x0,d.y1-d.y0)>3){
-      snap();B().arrows.push({id:uid(),x1:d.x0,y1:d.y0,x2:d.x1,y2:d.y1,color:d.mode==="run"?"#ffffff":"#ff6a45",dash:d.mode==="run"});save();
+      snap();
+      const na={id:uid(),x1:d.x0,y1:d.y0,x2:d.x1,y2:d.y1,color:d.mode==="run"?"#ffffff":"#ff6a45",dash:d.mode==="run"};
+      B().arrows.push(na);selDraw={kind:"arrow",id:na.id};save();renderSelbar();
     }
     renderDraw();renderChrome();return;
   }
   if(d.mode==="zone"){
     const w=Math.abs(d.x1-d.x0),h=Math.abs(d.y1-d.y0);
-    if(w>5&&h>3){snap();B().zones.push({id:uid(),x:Math.min(d.x0,d.x1),y:Math.min(d.y0,d.y1),w,h,label:"ZONE",color:"#ff6a45"});save();}
+    if(w>5&&h>3){
+      snap();const nz={id:uid(),x:Math.min(d.x0,d.x1),y:Math.min(d.y0,d.y1),w,h,label:"ZONE",color:"#ff6a45"};
+      B().zones.push(nz);selDraw={kind:"zone",id:nz.id};save();
+    }
     renderAll();return;
   }
   if(d.mode==="swipe"){
@@ -639,6 +759,20 @@ pitch.addEventListener("pointerup",e=>{
 pitch.addEventListener("pointercancel",()=>{if(drag&&drag.el)drag.el.classList.remove("drag");drag=null;ghost=null;renderDraw();});
 
 selbar.addEventListener("click",e=>{
+  if(selDraw){
+    const it = selDraw.kind==="arrow"?arrowById(selDraw.id):zoneById(selDraw.id);
+    if(!it) return;
+    const dc=e.target.closest("[data-dc]"), db=e.target.closest("[data-d]");
+    if(dc){snap();it.color=dc.dataset.dc;renderDraw();renderSelbar();save();return;}
+    if(!db)return;
+    const a=db.dataset.d;
+    if(a==="dash"){snap();it.dash=!it.dash;renderDraw();renderSelbar();save();}
+    if(a==="straight"){snap();delete it.mx;delete it.my;renderDraw();save();}
+    if(a==="rename")ask("Zone label",it.label||"",14).then(v=>{if(v!==null){snap();it.label=v.toUpperCase().slice(0,14);renderDraw();save();}});
+    if(a==="del"){snap();eraseEl(selDraw.kind,selDraw.id);selDraw=null;renderSelbar();}
+    if(a==="close"){selDraw=null;renderDraw();renderSelbar();}
+    return;
+  }
   const t=tokById(sel);if(!t)return;
   const b=e.target.closest("[data-a]"),c=e.target.closest("[data-c]");
   if(c){snap();t.color=c.dataset.c;renderTokens();renderSelbar();save();return;}
@@ -656,14 +790,14 @@ selbar.addEventListener("click",e=>{
 function goBoard(dir){
   const n=S.cur+dir;
   if(n<0||n>=S.boards.length){toast(dir>0?"Last board":"First board");return;}
-  S.cur=n;sel=null;pendingLink=null;renderAll();save();
+  S.cur=n;sel=null;selDraw=null;pendingLink=null;renderAll();save();
 }
 function addBoard(copy){
   snap();const src=B();
   const nb=copy?JSON.parse(JSON.stringify(src)):newBoard("Board "+(S.boards.length+1));
   nb.id=uid();
   if(copy){
-    nb.name=src.name+" ›";const map={};
+    nb.name=src.name;const map={};
     nb.tokens.forEach(t=>{const o=t.id;t.id=uid();map[o]=t.id;});
     nb.links.forEach(l=>{l.id=uid();l.a=map[l.a];l.b=map[l.b];});
     nb.arrows.forEach(a=>a.id=uid());nb.zones.forEach(z=>z.id=uid());
@@ -743,12 +877,12 @@ function setUI(on){
 $("#title").onclick=()=>ask("Board name",B().name).then(v=>{if(v){snap();B().name=v.slice(0,28);renderChrome();save();}});
 $("#prevB").onclick=()=>goBoard(-1);
 $("#nextB").onclick=()=>goBoard(1);
-$("#addBoard").onclick=()=>addBoard(false);
+$("#addBoard").onclick=()=>{addBoard(true);toast("Board carried over");};
 $("#bcount").onclick=()=>{renderBoardList();openSheet("#shBoards");};
 $("#addA").onclick=()=>addToken("A");
 $("#addB").onclick=()=>addToken("B");
-$("#bAdd").onclick=()=>{addBoard(false);renderBoardList();};
-$("#bDup").onclick=()=>{addBoard(true);renderBoardList();toast("Board duplicated");};
+$("#bAdd").onclick=()=>{addBoard(true);renderBoardList();toast("Board carried over");};
+$("#bBlank").onclick=()=>{addBoard(false);renderBoardList();toast("Blank board added");};
 $("#bRename").onclick=()=>ask("Board name",B().name).then(v=>{if(v){snap();B().name=v.slice(0,28);renderChrome();renderBoardList();save();}});
 $("#bDel").onclick=async()=>{
   if(S.boards.length===1){toast("Keep at least one board");return;}
@@ -765,6 +899,11 @@ $("#mFill").onclick=()=>{
   let i=FILLS.findIndex(x=>Math.abs(x[1]-S.fill)<0.02);if(i<0)i=1;
   const n=FILLS[(i+1)%FILLS.length];S.fill=n[1];renderAll();save();toast("Pitch: "+n[0]);
 };
+const WIDTHS=[["Hairline",0.62],["Thin",0.8],["Normal",1],["Bold",1.35]];
+$("#mLine").onclick=()=>{
+  let i=WIDTHS.findIndex(x=>Math.abs(x[1]-(S.lineScale||1))<0.05);if(i<0)i=2;
+  const n=WIDTHS[(i+1)%WIDTHS.length];S.lineScale=n[1];renderAll();save();toast("Lines: "+n[0]);
+};
 $("#mLabels").onclick=()=>{S.showLabels=!S.showLabels;renderTokens();save();toast(S.showLabels?"Labels on":"Labels hidden");};
 $("#mBall").onclick=()=>{const p=P2S(50,50);addBall(p.x,p.y);closeSheets();};
 $("#mClearLines").onclick=()=>{snap();B().links=[];B().arrows=[];B().zones=[];renderAll();save();closeSheets();};
@@ -773,7 +912,7 @@ $("#mReset").onclick=async()=>{if(!await confirmBox("Delete all boards and start
 
 document.querySelectorAll(".tool").forEach(b=>{
   b.onclick=()=>{
-    S.tool=b.dataset.tool;pendingLink=null;sel=null;
+    S.tool=b.dataset.tool;pendingLink=null;sel=null;selDraw=null;
     renderChrome();renderTokens();renderSelbar();
     const tips={move:"Drag players · double-tap to label",link:"Tap two players to connect",
       arrow:"Drag on the grass to draw a pass",run:"Drag to draw a run",
